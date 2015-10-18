@@ -1,25 +1,170 @@
 ---
 title: "Reproducible Research: Peer Assessment 1"
-output: 
+author: "Yilmaz Rona"
+date: "October 16, 2015"
+output:
   html_document:
-    keep_md: true
+    keep_md: yes
 ---
 
 
 ## Loading and preprocessing the data
+```{r load_libraries, echo=FALSE, message=FALSE, warning=FALSE}
+library(lubridate)
+library(plyr)
+library(data.table)
+library(ggplot2)
 
+```
+
+```{r load_data, echo=FALSE}
+
+original_url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2Factivity.zip"
+
+destdir <- paste(getwd(),"data",sep = "/")
+
+if (!file.exists(destdir)) {
+  dir.create(destdir)
+}
+
+downloaded_zip <- paste(destdir,"data.zip",sep = "/")
+
+uncompressed_data <- paste(destdir,"activity.csv",sep = "/")
+
+download_size <- file.size(downloaded_zip)
+
+download.file(original_url,downloaded_zip, method = "libcurl")
+
+unzip(downloaded_zip, exdir = destdir)
+
+activity_data <- read.csv(uncompressed_data,header = TRUE,na.strings = "NA")
+
+#Convert dates into dates
+activity_data$date <- strptime(activity_data$date, "%Y-%m-%d")
+
+```
+
+[The original dataset is published on the Internet[`r format(structure(download_size, class="object_size"), units="auto")`].](`r original_url`)
+
+```{r data_properties, echo=TRUE}
+
+str(activity_data)
+
+summary(activity_data)
+```
 
 
 ## What is mean total number of steps taken per day?
+```{r calc_steps, echo=FALSE}
 
+step_counts <- ddply(activity_data,.(date),summarize,total=sum(steps,na.rm = TRUE))
+step_counts$date <- as.Date(step_counts$date)
+
+
+```
+
+```{r plot_step_Count, echo=FALSE}
+ggplot(step_counts, aes(x=date,y=total))+ geom_bar(stat="identity") + scale_y_continuous("Total Steps")+ scale_x_date("Date")
+
+
+```
+
+The mean number of steps per day is `r prettyNum (mean(step_counts$total),big.mark = ",")`.  The median number of steps per day is `r  prettyNum (median(step_counts$total),big.mark = ",")`.
 
 
 ## What is the average daily activity pattern?
+```{r average_intervals, echo=FALSE}
 
+interval.means <- ddply(activity_data,.(interval),summarize,steps=mean(steps,na.rm = TRUE))
 
+ggplot(interval.means, aes(x=interval,y = steps)) + geom_line() + ggtitle("The average number of steps in each 5 minute interval over all days") + scale_y_continuous("Mean number of steps") + scale_x_continuous("Starting minute for interval")
+
+```
+
+```{r find_peak_interval, echo=FALSE}
+
+interval.means.table <- data.table(interval.means)
+peak.interval <- interval.means.table[interval.means.table$steps==max(interval.means.table$steps),]
+
+```
+
+On average, the highest activity is in the 5 minute interval starting at minute `r prettyNum (median(peak.interval$interval[1]),big.mark = ",")` where the mean number of steps is `r prettyNum (median(peak.interval$steps[1]),big.mark = ",")`.
 
 ## Imputing missing values
 
+A quick note;  what we are being asked to do here is ethically and scientifically suspect. When one infills missing data, one is manufacturing data.  There is no difference between making up observations to overwrite missing values and replacing valid observations with made up data.  Since this assignment will not be used for any decision whatsoever, let alone decisions affecting lives or people's health, I will do what's asked. However, if I were asked to do something like this professionally, I would refuse.  
 
+In order to make up values to 'replace' missing values, we should first know what physically caused the detector to fail to make an observation. We have no information that allows us to know this.  So I will presume that the missing values occur when the detector is turned off.    
+
+```{r subset_missing_values, echo=FALSE, message=FALSE}
+missing.data <- subset(activity_data, is.na(steps))
+valid.data <- subset(activity_data, !is.na(steps))
+missing.data$date <- as.Date(missing.data$date)
+valid.data$date <- as.Date(valid.data$date)
+
+missing.counts <- ddply(activity_data,.(date),summarize,NoObs=sum(is.na(steps)))
+valid.counts <- ddply(activity_data,.(date),summarize,ObsMade=sum(!is.na(steps)))
+
+valid.counts$date <- as.Date(valid.counts$date)
+missing.counts$date <- as.Date(missing.counts$date)
+
+observation.counts <- melt(join(valid.counts,missing.counts),id.vars="date",type="inner")
+
+
+```
+
+There are `r prettyNum (nrow(missing.data),big.mark = ",")` observations that are missing from the original data set.
+
+We plot the number of recorded observations and the number of missing observations for each date of the study:
+
+``` {r plot_missing_observations, echo=FALSE}
+
+ggplot(observation.counts, aes(date,value,fill = variable))+ geom_bar(stat = "identity") + scale_y_continuous("Observations") + scale_fill_discrete(name="Observations", breaks=c("ObsMade","NoObs"),labels=c("Recorded","Missing"))
+
+```
+
+It is apparent that when data is missing, the entire day is affected; either 288 observations are recorded, or no observations are recorded whatsoever.
+
+So, the data we make up will be somewhat less damaging to the accuracy of our dataset if we crudely insert the mean values observed for each interval over the entire two months in place of the missing data. 
+
+```{r make_up_data, echo=FALSE, message=FALSE}
+
+missing.data$steps <- NULL
+made.up.observations <- join(missing.data,interval.means,type="inner")
+
+
+guessed_activity_data <- join(made.up.observations, valid.data,type="full")
+
+guessed_step_counts <- arrange(ddply(guessed_activity_data,.(date),summarize,steps=sum(steps)),date)
+
+```
+
+```{r plot_guessed_step_Count, echo=FALSE}
+ggplot(guessed_step_counts, aes(x=date,y=steps))+ geom_bar(stat="identity") + scale_y_continuous("Total Steps")+ scale_x_date("Date")
+
+
+```
+
+The mean number of steps per day is `r prettyNum (mean(guessed_step_counts$steps),big.mark = ",")`.  The median number of steps per day is `r  prettyNum (median(guessed_step_counts$steps),big.mark = ",")`.  These values differ from the averages calculated purely from observations. I am not certain if the fact that the median and the mean are identical is a coincidence of an artifact of the infilling operation.
 
 ## Are there differences in activity patterns between weekdays and weekends?
+
+```{r categorize_days, echo=FALSE}
+
+guessed_activity_data$daytype <- factor("weekday")
+levels(guessed_activity_data$daytype) <- c(levels(guessed_activity_data$daytype),"weekend")
+guessed_activity_data$daytype[wday(guessed_activity_data$date) == 7 | wday(guessed_activity_data$date) == 1] <- "weekend"
+
+interval.means.guessed <- ddply(guessed_activity_data,.(interval,daytype),summarize,steps=mean(steps,na.rm = TRUE))
+
+
+```
+
+Below we can see the differences in the mean activity levels over all 5 minute intervals on weekdays and on weekends.  One can see that on weekends, the wearer was far more likely to engage in significant walking activity throughout the day, whereas except during the morning, on weekdays the wearer was more sedentary. 
+
+```{r plot_weekend_vs_weekday, echo=FALSE}
+
+ggplot(interval.means.guessed, aes(x=interval,y = steps)) + geom_line() + ggtitle("The average number of steps in each 5 minute\ninterval for weekdays and weekend days.") + scale_y_continuous("Mean number of steps") + scale_x_continuous("Starting minute for interval") + facet_grid(daytype ~ .)
+
+```
+
